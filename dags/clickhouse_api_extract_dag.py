@@ -185,11 +185,42 @@ def prepare_for_clickhouse(**kwargs):
     ORDER BY (objectID, extraction_date)
     """
     
-    # Use the execute method instead of run
+    # Use the execute method
     clickhouse_hook.execute(create_table_query)
     
-    # Return the prepared data for the next task
-    return data_json
+    # Transform data into a format suitable for direct insertion
+    processed_data = []
+    for item in data:
+        processed_item = {
+            'objectID': item.get('objectID', 0),
+            'title': item.get('title', ''),
+            'artistDisplayName': item.get('artistDisplayName', 'Unknown Artist'),
+            'artistDisplayBio': item.get('artistDisplayBio', ''),
+            'artistNationality': item.get('artistNationality', ''),
+            'objectDate': item.get('objectDate', 'Unknown Date'),
+            'objectBeginDate': item.get('objectBeginDate', 0),
+            'objectEndDate': item.get('objectEndDate', 0),
+            'medium': item.get('medium', 'Unknown Medium'),
+            'department': item.get('department', 'Unknown Department'),
+            'classification': item.get('classification', 'Unknown'),
+            'culture': item.get('culture', ''),
+            'period': item.get('period', ''),
+            'dynasty': item.get('dynasty', ''),
+            'dimensions': item.get('dimensions', ''),
+            'city': item.get('city', ''),
+            'state': item.get('state', ''),
+            'country': item.get('country', ''),
+            'primaryImage': item.get('primaryImage', ''),
+            'objectURL': item.get('objectURL', ''),
+            'isPublicDomain': 1 if item.get('isPublicDomain', False) else 0,
+            'GalleryNumber': item.get('GalleryNumber', ''),
+            'extraction_date': item.get('extraction_date', datetime.now().strftime('%Y-%m-%d'))
+        }
+        processed_data.append(processed_item)
+    
+    # Store the processed data in XCom
+    ti.xcom_push(key='processed_data', value=processed_data)
+    return processed_data
 
 # Tasks
 extract_task = PythonOperator(
@@ -219,36 +250,9 @@ clickhouse_load = ClickHouseOperator(
     clickhouse_conn_id='clickhouse_default',
     database='default',
     sql="""
-    INSERT INTO met_museum_objects
-    SELECT 
-        JSONExtractUInt(json, 'objectID') AS objectID,
-        JSONExtractString(json, 'title') AS title,
-        JSONExtractString(json, 'artistDisplayName') AS artistDisplayName,
-        JSONExtractString(json, 'artistDisplayBio') AS artistDisplayBio,
-        JSONExtractString(json, 'artistNationality') AS artistNationality,
-        JSONExtractString(json, 'objectDate') AS objectDate,
-        JSONExtractInt(json, 'objectBeginDate') AS objectBeginDate,
-        JSONExtractInt(json, 'objectEndDate') AS objectEndDate,
-        JSONExtractString(json, 'medium') AS medium,
-        JSONExtractString(json, 'department') AS department,
-        JSONExtractString(json, 'classification') AS classification,
-        JSONExtractString(json, 'culture') AS culture,
-        JSONExtractString(json, 'period') AS period,
-        JSONExtractString(json, 'dynasty') AS dynasty,
-        JSONExtractString(json, 'dimensions') AS dimensions,
-        JSONExtractString(json, 'city') AS city,
-        JSONExtractString(json, 'state') AS state,
-        JSONExtractString(json, 'country') AS country,
-        JSONExtractString(json, 'primaryImage') AS primaryImage,
-        JSONExtractString(json, 'objectURL') AS objectURL,
-        JSONExtractUInt(json, 'isPublicDomain') AS isPublicDomain,
-        JSONExtractString(json, 'GalleryNumber') AS GalleryNumber,
-        toDate(JSONExtractString(json, 'extraction_date')) AS extraction_date
-    FROM input('json String')
+    INSERT INTO met_museum_objects VALUES
     """,
-    parameters={
-        'json': "{{ ti.xcom_pull(task_ids='prepare_for_clickhouse') }}"
-    },
+    parameters="{{ ti.xcom_pull(task_ids='prepare_for_clickhouse') }}",
     dag=dag,
 )
 
