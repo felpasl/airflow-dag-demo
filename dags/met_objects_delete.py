@@ -10,7 +10,7 @@ default_args = {
     'retries': 1,
 }
 
-dag_id = 'met_museum_to_clickhouse_dynamic'
+dag_id = 'met_objects_delete'
 
 def create_dag(dag_id, objectIDs=None, batch_size=10, **kwargs):
     dag = DAG(
