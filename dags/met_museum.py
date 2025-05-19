@@ -114,4 +114,15 @@ get_stats = PostgresOperator(
     dag=dag,
 )
 
-create_table >> process_met_objects >> get_stats
+# The error is likely because the process_met_objects function is being used directly in a task dependency
+# We need to properly wrap it in a PythonOperator
+
+process_met_objects_task = PythonOperator(
+    task_id="process_met_objects",
+    python_callable=process_met_objects,
+    provide_context=True,
+    dag=dag,
+)
+
+# Fix the task dependencies - ensure you're using task operators not functions
+create_table >> process_met_objects_task >> get_stats
