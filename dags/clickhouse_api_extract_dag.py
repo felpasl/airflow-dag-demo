@@ -188,39 +188,72 @@ def prepare_for_clickhouse(**kwargs):
     # Use the execute method
     clickhouse_hook.execute(create_table_query)
     
-    # Transform data into a format suitable for direct insertion
-    processed_data = []
-    for item in data:
-        processed_item = {
-            'objectID': item.get('objectID', 0),
-            'title': item.get('title', ''),
-            'artistDisplayName': item.get('artistDisplayName', 'Unknown Artist'),
-            'artistDisplayBio': item.get('artistDisplayBio', ''),
-            'artistNationality': item.get('artistNationality', ''),
-            'objectDate': item.get('objectDate', 'Unknown Date'),
-            'objectBeginDate': item.get('objectBeginDate', 0),
-            'objectEndDate': item.get('objectEndDate', 0),
-            'medium': item.get('medium', 'Unknown Medium'),
-            'department': item.get('department', 'Unknown Department'),
-            'classification': item.get('classification', 'Unknown'),
-            'culture': item.get('culture', ''),
-            'period': item.get('period', ''),
-            'dynasty': item.get('dynasty', ''),
-            'dimensions': item.get('dimensions', ''),
-            'city': item.get('city', ''),
-            'state': item.get('state', ''),
-            'country': item.get('country', ''),
-            'primaryImage': item.get('primaryImage', ''),
-            'objectURL': item.get('objectURL', ''),
-            'isPublicDomain': 1 if item.get('isPublicDomain', False) else 0,
-            'GalleryNumber': item.get('GalleryNumber', ''),
-            'extraction_date': item.get('extraction_date', datetime.now().strftime('%Y-%m-%d'))
-        }
-        processed_data.append(processed_item)
+    # Return the data for the next task
+    return data_json
+
+# Create a new task to load data into ClickHouse one record at a time
+def load_data_to_clickhouse(**kwargs):
+    """
+    Load data into ClickHouse table
+    """
+    ti = kwargs['ti']
+    data_json = ti.xcom_pull(task_ids='prepare_for_clickhouse')
+    data = json.loads(data_json)
     
-    # Store the processed data in XCom
-    ti.xcom_push(key='processed_data', value=processed_data)
-    return processed_data
+    clickhouse_hook = ClickHouseHook(clickhouse_conn_id='clickhouse_default')
+    
+    # Insert records in batches to avoid too many parameters
+    batch_size = 10
+    for i in range(0, len(data), batch_size):
+        batch = data[i:i+batch_size]
+        
+        # Create a separate INSERT statement for each batch
+        for item in batch:
+            # Prepare parameters in dict form
+            params = {
+                'objectID': item.get('objectID', 0),
+                'title': item.get('title', ''),
+                'artistDisplayName': item.get('artistDisplayName', 'Unknown Artist'),
+                'artistDisplayBio': item.get('artistDisplayBio', ''),
+                'artistNationality': item.get('artistNationality', ''),
+                'objectDate': item.get('objectDate', 'Unknown Date'),
+                'objectBeginDate': item.get('objectBeginDate', 0),
+                'objectEndDate': item.get('objectEndDate', 0),
+                'medium': item.get('medium', 'Unknown Medium'),
+                'department': item.get('department', 'Unknown Department'),
+                'classification': item.get('classification', 'Unknown'),
+                'culture': item.get('culture', ''),
+                'period': item.get('period', ''),
+                'dynasty': item.get('dynasty', ''),
+                'dimensions': item.get('dimensions', ''),
+                'city': item.get('city', ''),
+                'state': item.get('state', ''),
+                'country': item.get('country', ''),
+                'primaryImage': item.get('primaryImage', ''),
+                'objectURL': item.get('objectURL', ''),
+                'isPublicDomain': 1 if item.get('isPublicDomain', False) else 0,
+                'GalleryNumber': item.get('GalleryNumber', ''),
+                'extraction_date': item.get('extraction_date', datetime.now().strftime('%Y-%m-%d'))
+            }
+            
+            # SQL statement with named parameters
+            sql = """
+            INSERT INTO met_museum_objects (
+                objectID, title, artistDisplayName, artistDisplayBio, 
+                artistNationality, objectDate, objectBeginDate, objectEndDate,
+                medium, department, classification, culture, period, dynasty,
+                dimensions, city, state, country, primaryImage, objectURL,
+                isPublicDomain, GalleryNumber, extraction_date
+            ) VALUES (
+                %(objectID)s, %(title)s, %(artistDisplayName)s, %(artistDisplayBio)s,
+                %(artistNationality)s, %(objectDate)s, %(objectBeginDate)s, %(objectEndDate)s,
+                %(medium)s, %(department)s, %(classification)s, %(culture)s, %(period)s, %(dynasty)s,
+                %(dimensions)s, %(city)s, %(state)s, %(country)s, %(primaryImage)s, %(objectURL)s,
+                %(isPublicDomain)s, %(GalleryNumber)s, %(extraction_date)s
+            )
+            """
+            
+            clickhouse_hook.execute(sql, params)
 
 # Tasks
 extract_task = PythonOperator(
@@ -244,17 +277,13 @@ prepare_task = PythonOperator(
     dag=dag,
 )
 
-# ClickHouse load task
-clickhouse_load = ClickHouseOperator(
+# Replace the ClickHouseOperator with a PythonOperator
+load_to_clickhouse = PythonOperator(
     task_id='load_to_clickhouse',
-    clickhouse_conn_id='clickhouse_default',
-    database='default',
-    sql="""
-    INSERT INTO met_museum_objects VALUES
-    """,
-    parameters="{{ ti.xcom_pull(task_ids='prepare_for_clickhouse') }}",
+    python_callable=load_data_to_clickhouse,
+    provide_context=True,
     dag=dag,
 )
 
 # Task dependencies
-extract_task >> transform_task >> prepare_task >> clickhouse_load
+extract_task >> transform_task >> prepare_task >> load_to_clickhouse
