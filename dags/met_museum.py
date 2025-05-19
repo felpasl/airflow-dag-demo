@@ -20,6 +20,11 @@ dag = DAG(
     default_args=default_args,
     description="A DAG to process Met Museum data",
     schedule_interval="@daily",
+    # Add concurrency settings to prevent parallel execution
+    max_active_runs=1,
+    concurrency=1,
+    # The following settings ensure tasks run sequentially
+    max_active_tasks=1
 )
 
 # Replace ClickHouse table creation with PostgreSQL
