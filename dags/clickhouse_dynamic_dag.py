@@ -4,8 +4,8 @@ import requests
 import pandas as pd
 from airflow import DAG
 from airflow.operators.python import PythonOperator
-from airflow_clickhouse_plugin.operators.clickhouse_operator import ClickHouseOperator
 from airflow_clickhouse_plugin.hooks.clickhouse_hook import ClickHouseHook
+from airflow.models.param import Param
 
 # Default arguments for the DAG
 default_args = {
@@ -15,25 +15,16 @@ default_args = {
     'email_on_retry': False,
     'retries': 1,
     'retry_delay': timedelta(minutes=5),
-    'start_date': datetime(2023, 1, 1),
+    'start_date': datetime(2025, 5, 19),
 }
 
-# Create the DAG
-dag = DAG(
-    'met_museum_to_clickhouse_dynamic',
-    default_args=default_args,
-    description='Extract data from Met Museum API in batch tasks',
-    schedule_interval='@daily',
-    catchup=False,
-)
+# Number of objects per batch
+BATCH_SIZE = 50
 
-# Function to extract data from API
-def extract_from_api(**kwargs):
+def extract_and_get_batches(api_url="https://collectionapi.metmuseum.org/public/collection/v1/objects", **kwargs):
     """
-    Extract data from Met Museum API and return list of object IDs
+    Extract data from Met Museum API and divide into batches
     """
-    # Get list of object IDs
-    api_url = "https://collectionapi.metmuseum.org/public/collection/v1/objects"
     response = requests.get(api_url)
     
     if response.status_code == 200:
@@ -45,15 +36,15 @@ def extract_from_api(**kwargs):
         object_ids = object_ids[:1000]
         
         # Split into batches
-        batch_size = 50
         batches = []
-        for i in range(0, len(object_ids), batch_size):
-            batch = object_ids[i:i+batch_size]
-            batches.append(batch)
-        
-        # Store batch information
-        kwargs['ti'].xcom_push(key='batches', value=json.dumps(batches))
-        print(f"Created {len(batches)} batches from {len(object_ids)} object IDs")
+        for i in range(0, len(object_ids), BATCH_SIZE):
+            batch = object_ids[i:i+BATCH_SIZE]
+            batches.append({
+                'batch_num': i // BATCH_SIZE + 1,
+                'start_idx': i,
+                'end_idx': min(i+BATCH_SIZE, len(object_ids)),
+                'object_ids': batch
+            })
         
         return batches
     else:
@@ -97,14 +88,21 @@ def prepare_clickhouse_table(**kwargs):
     clickhouse_hook.execute(create_table_query)
     return "Table created or already exists"
 
-def process_batch(batch_ids, **kwargs):
+def process_batch(**kwargs):
     """
     Process a batch of object IDs and load to ClickHouse
     """
+    # Get batch information from params
+    params = kwargs['params']
+    batch_num = params.get('batch_num')
+    object_ids = params.get('object_ids')
+    
+    print(f"Processing batch {batch_num} with {len(object_ids)} objects")
+    
     batch_objects = []
     
     # Fetch objects in batch
-    for obj_id in batch_ids:
+    for obj_id in object_ids:
         obj_url = f"https://collectionapi.metmuseum.org/public/collection/v1/objects/{obj_id}"
         try:
             obj_response = requests.get(obj_url)
@@ -159,68 +157,44 @@ def process_batch(batch_ids, **kwargs):
     if records:
         clickhouse_hook = ClickHouseHook(clickhouse_conn_id='clickhouse_default')
         clickhouse_hook.execute('INSERT INTO met_museum_objects VALUES', records)
-        return f"Inserted {len(records)} records from batch"
+        return f"Inserted {len(records)} records from batch {batch_num}"
     else:
-        return "No records found in batch"
+        return f"No records found in batch {batch_num}"
 
-# Create DAG
-with DAG(
-    'met_museum_to_clickhouse_dynamic',
-    default_args=default_args,
-    description='Extract data from Met Museum API in batch tasks',
-    schedule_interval='@daily',
-    catchup=False,
-) as dag:
+# Get batches for dynamic DAG generation
+batches = extract_and_get_batches()
+
+# Create a DAG for each batch
+for batch in batches:
+    batch_id = batch['batch_num']
+    dag_id = f'met_museum_batch_{batch_id}'
     
-    # Extract object IDs task
-    extract_task = PythonOperator(
-        task_id='extract_object_ids',
-        python_callable=extract_from_api,
-        provide_context=True,
-    )
-    
-    # Prepare ClickHouse table
-    prepare_table_task = PythonOperator(
-        task_id='prepare_clickhouse_table',
-        python_callable=prepare_clickhouse_table,
-        provide_context=True,
-    )
-    
-    # Dynamic task creation
-    def create_batch_tasks(batches):
-        tasks = []
-        for i, batch in enumerate(batches):
-            task = PythonOperator(
-                task_id=f'process_batch_{i}',
-                python_callable=process_batch,
-                op_kwargs={'batch_ids': batch},
-                provide_context=True,
-                dag=dag,
-            )
-            tasks.append(task)
-        return tasks
-    
-    # Set up dependencies
-    extract_task >> prepare_table_task
-    
-    # This is a placeholder - the actual batch tasks will be created when the DAG is parsed
-    def create_dynamic_tasks(**kwargs):
-        """
-        Create dynamic batch processing tasks
-        """
-        # The batches are retrieved during DAG initialization
-        batches_json = kwargs['ti'].xcom_pull(task_ids='extract_object_ids', key='batches')
-        if batches_json:
-            batches = json.loads(batches_json)
-            batch_tasks = create_batch_tasks(batches)
-            for task in batch_tasks:
-                prepare_table_task >> task
-    
-    # Dummy task that will be used to create dynamic tasks
-    dynamic_task_creator = PythonOperator(
-        task_id='create_dynamic_tasks',
-        python_callable=create_dynamic_tasks,
-        provide_context=True,
-    )
-    
-    prepare_table_task >> dynamic_task_creator
+    with DAG(
+        dag_id,
+        default_args=default_args,
+        description=f'Process Met Museum batch {batch_id} (objects {batch["start_idx"]+1}-{batch["end_idx"]})',
+        schedule_interval='@daily',
+        catchup=False,
+        params={
+            'batch_num': Param(batch_id, type='integer'),
+            'object_ids': Param(batch['object_ids'], type='array')
+        },
+    ) as dag:
+        
+        # Prepare ClickHouse table task
+        prepare_table = PythonOperator(
+            task_id='prepare_clickhouse_table',
+            python_callable=prepare_clickhouse_table,
+        )
+        
+        # Process batch task
+        process = PythonOperator(
+            task_id=f'process_batch',
+            python_callable=process_batch,
+        )
+        
+        # Set task dependencies
+        prepare_table >> process
+        
+    # Make DAG available for Airflow
+    globals()[dag_id] = dag
