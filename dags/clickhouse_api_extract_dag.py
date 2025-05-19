@@ -205,6 +205,9 @@ def load_data_to_clickhouse(**kwargs):
     # Prepare records as a list of dictionaries
     records = []
     for item in data:
+
+        extraction_date = datetime.now().date()
+            
         record = {
             'objectID': item.get('objectID', 0),
             'title': item.get('title', ''),
@@ -228,7 +231,7 @@ def load_data_to_clickhouse(**kwargs):
             'objectURL': item.get('objectURL', ''),
             'isPublicDomain': 1 if item.get('isPublicDomain', False) else 0,
             'GalleryNumber': item.get('GalleryNumber', ''),
-            'extraction_date': item.get('extraction_date', datetime.now().strftime('%Y-%m-%d'))
+            'extraction_date': extraction_date  # Using Python date object instead of string
         }
         records.append(record)
     
