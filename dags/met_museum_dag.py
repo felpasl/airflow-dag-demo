@@ -7,7 +7,7 @@ from typing import List, Dict, Any
 from airflow import DAG
 from airflow.operators.python import PythonOperator
 from airflow.models.baseoperator import chain
-from airflow_clickhouse_plugin.hooks.clickhouse_hook import ClickHouseHook
+from airflow_clickhouse_plugin.hooks.clickhouse import ClickHouseHook
 
 default_args = {
     'owner': 'airflow',
