@@ -2,6 +2,5 @@ apache-airflow==3.0.0
 pandas==1.5.0
 pytest==7.1.0
 requests==2.28.0
-airflow-clickhouse-plugin
-apache-airflow-providers-postgres
-requests>=2.28.0
+apache-airflow-providers-postgres>=2.0.0
+psycopg2-binary>=2.9.5
