@@ -26,7 +26,7 @@ def create_dag(dag_id, objectIDs=None, batch_size=10, **kwargs):
     delete_records = ClickHouseOperator(
         task_id='delete_records',
         database='default',
-        sql="TRUNCATE TABLE IF EXISTS met_objects",
+        sql="TRUNCATE TABLE IF EXISTS met_museum_objects",
         clickhouse_conn_id='clickhouse_default',
         dag=dag,
     )
