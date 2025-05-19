@@ -1,5 +1,5 @@
 from airflow import DAG
-from airflow.providers.clickhouse.operators.clickhouse import ClickHouseOperator
+from airflow_clickhouse_plugin.operators.clickhouse import ClickHouseOperator
 from airflow.operators.dummy_operator import DummyOperator
 from datetime import datetime
 
