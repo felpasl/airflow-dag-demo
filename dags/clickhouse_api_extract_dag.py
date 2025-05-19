@@ -78,7 +78,7 @@ def extract_and_plan(**kwargs):
         
         # For testing, limit to 1000 objects
         # Remove this in production
-        object_ids = object_ids[:1000]
+        # object_ids = object_ids[:1000]
         
         # Split into batches
         batch_size = 50
@@ -228,38 +228,59 @@ prepare_table_task = PythonOperator(
 
 # Create dynamic batch processing tasks
 def create_batch_processing_tasks(dag):
+    """
+    Dynamically create batch processing tasks using the actual data
+    from the upstream 'extract_and_plan' task.
+    """
     # Create a task group for batch processing
     with TaskGroup(group_id="batch_processing", dag=dag) as batch_group:
         # This dummy task helps with visualization
         start_processing = DummyOperator(task_id='start_processing')
         
-        # Dynamic batch processing - we'll set this up to create tasks dynamically
-        # at runtime based on the results of extract_and_plan
-        batches = []
-        try:
-            # For DAG parsing, provide some placeholder batches
-            # These will be replaced at runtime with actual API data
-            for i in range(5):  # Just a placeholder for parsing
-                batches.append({'batch_num': i+1, 'object_ids': []})
-        except Exception:
-            pass  # During parsing, this might fail
+        # Create a function that will be evaluated at runtime to get the actual batches
+        def get_batches(**context):
+            ti = context['ti']
+            batches = ti.xcom_pull(task_ids='extract_and_plan', key='processing_batches')
+            if not batches:
+                raise ValueError("No batches found in XCom. Make sure extract_and_plan task is working correctly.")
+            return batches
         
-        batch_tasks = []
-        for batch in batches:
-            task = PythonOperator(
-                task_id=f'process_batch_{batch["batch_num"]}',
-                python_callable=process_object_batch,
-                op_kwargs={'batch': batch},
-                provide_context=True,
-                dag=dag,
-            )
-            batch_tasks.append(task)
-            start_processing >> task
+        # Get the batches at runtime
+        from airflow.operators.python import BranchPythonOperator
+        
+        # Python function to process an individual batch
+        def process_batch_task(batch, **context):
+            return process_object_batch(batch, **context)
+        
+        # Use the task mapping feature (Airflow 2.3+) to dynamically create tasks
+        from airflow.decorators import task
+        
+        @task
+        def get_batches_task(**context):
+            ti = context['ti']
+            batches = ti.xcom_pull(task_ids='extract_and_plan', key='processing_batches')
+            if not batches:
+                print("Warning: No batches found in XCom, using placeholders for parse time")
+                # During DAG parsing, we'll just create a placeholder
+                return [{'batch_num': i+1, 'object_ids': []} for i in range(5)]
+            return batches
+        
+        batches = get_batches_task()
+        
+        # Map over all batches to create dynamic tasks
+        @task
+        def process_batch(batch, **context):
+            return process_object_batch(batch, **context)
+        
+        # Map the task over all batches
+        batch_tasks = process_batch.expand(batch=batches)
+        
+        # Set up the dependencies
+        start_processing >> batch_tasks
         
         # This dummy task helps with visualization
         end_processing = DummyOperator(task_id='end_processing')
-        for task in batch_tasks:
-            task >> end_processing
+        batch_tasks >> end_processing
     
     return batch_group
 
