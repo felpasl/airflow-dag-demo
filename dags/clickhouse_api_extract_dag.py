@@ -185,7 +185,8 @@ def prepare_for_clickhouse(**kwargs):
     ORDER BY (objectID, extraction_date)
     """
     
-    clickhouse_hook.run(create_table_query)
+    # Use the execute method instead of run
+    clickhouse_hook.execute(create_table_query)
     
     # Return the prepared data for the next task
     return data_json
