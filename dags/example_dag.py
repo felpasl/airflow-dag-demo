@@ -18,7 +18,10 @@ dag = DAG(
     'example_dag',
     default_args=default_args,
     description='A simple example DAG',
-    schedule_interval='@monthly',
+    schedule_interval=timedelta(days=1),
+    # Add concurrency limits
+    max_active_runs=1,  # Limits concurrent DAG runs
+    concurrency=5,      # Limits concurrent task instances across DAG runs
 )
 
 # Define tasks

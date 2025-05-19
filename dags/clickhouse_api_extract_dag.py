@@ -26,6 +26,8 @@ dag = DAG(
     default_args=default_args,
     description='Extract data from Met Museum API in batch tasks',
     schedule_interval='@daily',
+    max_active_runs=1,  # Limits the DAG to only 1 run at a time
+    concurrency=1,      # Limits concurrent task instances to 3 across all DAG runs
     catchup=False,
 )
 
