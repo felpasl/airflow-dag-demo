@@ -191,10 +191,10 @@ def prepare_for_clickhouse(**kwargs):
     # Return the data for the next task
     return data_json
 
-# Create a new task to load data into ClickHouse one record at a time
+# Create a new task to load data into ClickHouse in batches
 def load_data_to_clickhouse(**kwargs):
     """
-    Load data into ClickHouse table
+    Load data into ClickHouse table in a single batch operation
     """
     ti = kwargs['ti']
     data_json = ti.xcom_pull(task_ids='prepare_for_clickhouse')
@@ -202,58 +202,40 @@ def load_data_to_clickhouse(**kwargs):
     
     clickhouse_hook = ClickHouseHook(clickhouse_conn_id='clickhouse_default')
     
-    # Insert records in batches to avoid too many parameters
-    batch_size = 10
-    for i in range(0, len(data), batch_size):
-        batch = data[i:i+batch_size]
-        
-        # Create a separate INSERT statement for each batch
-        for item in batch:
-            # Prepare parameters in dict form
-            params = {
-                'objectID': item.get('objectID', 0),
-                'title': item.get('title', ''),
-                'artistDisplayName': item.get('artistDisplayName', 'Unknown Artist'),
-                'artistDisplayBio': item.get('artistDisplayBio', ''),
-                'artistNationality': item.get('artistNationality', ''),
-                'objectDate': item.get('objectDate', 'Unknown Date'),
-                'objectBeginDate': item.get('objectBeginDate', 0),
-                'objectEndDate': item.get('objectEndDate', 0),
-                'medium': item.get('medium', 'Unknown Medium'),
-                'department': item.get('department', 'Unknown Department'),
-                'classification': item.get('classification', 'Unknown'),
-                'culture': item.get('culture', ''),
-                'period': item.get('period', ''),
-                'dynasty': item.get('dynasty', ''),
-                'dimensions': item.get('dimensions', ''),
-                'city': item.get('city', ''),
-                'state': item.get('state', ''),
-                'country': item.get('country', ''),
-                'primaryImage': item.get('primaryImage', ''),
-                'objectURL': item.get('objectURL', ''),
-                'isPublicDomain': 1 if item.get('isPublicDomain', False) else 0,
-                'GalleryNumber': item.get('GalleryNumber', ''),
-                'extraction_date': item.get('extraction_date', datetime.now().strftime('%Y-%m-%d'))
-            }
-            
-            # SQL statement with named parameters
-            sql = """
-            INSERT INTO met_museum_objects (
-                objectID, title, artistDisplayName, artistDisplayBio, 
-                artistNationality, objectDate, objectBeginDate, objectEndDate,
-                medium, department, classification, culture, period, dynasty,
-                dimensions, city, state, country, primaryImage, objectURL,
-                isPublicDomain, GalleryNumber, extraction_date
-            ) VALUES (
-                %(objectID)s, %(title)s, %(artistDisplayName)s, %(artistDisplayBio)s,
-                %(artistNationality)s, %(objectDate)s, %(objectBeginDate)s, %(objectEndDate)s,
-                %(medium)s, %(department)s, %(classification)s, %(culture)s, %(period)s, %(dynasty)s,
-                %(dimensions)s, %(city)s, %(state)s, %(country)s, %(primaryImage)s, %(objectURL)s,
-                %(isPublicDomain)s, %(GalleryNumber)s, %(extraction_date)s
-            )
-            """
-            
-            clickhouse_hook.execute(sql, params)
+    # Prepare records as a list of dictionaries
+    records = []
+    for item in data:
+        record = {
+            'objectID': item.get('objectID', 0),
+            'title': item.get('title', ''),
+            'artistDisplayName': item.get('artistDisplayName', 'Unknown Artist'),
+            'artistDisplayBio': item.get('artistDisplayBio', ''),
+            'artistNationality': item.get('artistNationality', ''),
+            'objectDate': item.get('objectDate', 'Unknown Date'),
+            'objectBeginDate': item.get('objectBeginDate', 0),
+            'objectEndDate': item.get('objectEndDate', 0),
+            'medium': item.get('medium', 'Unknown Medium'),
+            'department': item.get('department', 'Unknown Department'),
+            'classification': item.get('classification', 'Unknown'),
+            'culture': item.get('culture', ''),
+            'period': item.get('period', ''),
+            'dynasty': item.get('dynasty', ''),
+            'dimensions': item.get('dimensions', ''),
+            'city': item.get('city', ''),
+            'state': item.get('state', ''),
+            'country': item.get('country', ''),
+            'primaryImage': item.get('primaryImage', ''),
+            'objectURL': item.get('objectURL', ''),
+            'isPublicDomain': 1 if item.get('isPublicDomain', False) else 0,
+            'GalleryNumber': item.get('GalleryNumber', ''),
+            'extraction_date': item.get('extraction_date', datetime.now().strftime('%Y-%m-%d'))
+        }
+        records.append(record)
+    
+    # Simple batch insertion with dictionaries
+    if records:
+        clickhouse_hook.execute('INSERT INTO met_museum_objects VALUES', records)
+        print(f"Successfully inserted {len(records)} records into ClickHouse")
 
 # Tasks
 extract_task = PythonOperator(
