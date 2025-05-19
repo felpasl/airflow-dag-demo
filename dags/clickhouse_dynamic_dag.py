@@ -4,7 +4,7 @@ import requests
 import pandas as pd
 from airflow import DAG
 from airflow.operators.python import PythonOperator
-from airflow_clickhouse_plugin.hooks.clickhouse_hook import ClickHouseHook
+from airflow_clickhouse_plugin.hooks.clickhouse import ClickHouseHook
 from airflow.models.param import Param
 
 # Default arguments for the DAG
