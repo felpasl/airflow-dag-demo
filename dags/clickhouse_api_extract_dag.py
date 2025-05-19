@@ -113,66 +113,75 @@ def create_dag():
         
         print(f"Processing batch {batch_num} with {len(object_ids)} objects")
         
-        batch_objects = []
+        # Initialize ClickHouse hook
+        clickhouse_hook = ClickHouseHook(clickhouse_conn_id='clickhouse_default')
         
-        # Fetch objects in batch
-        for obj_id in object_ids:
+        # Initialize counters for progress tracking
+        chunk_size = 100
+        total_inserted = 0
+        current_chunk = []
+        
+        # Process objects in the batch
+        for i, obj_id in enumerate(object_ids):
             obj_url = f"https://collectionapi.metmuseum.org/public/collection/v1/objects/{obj_id}"
             try:
                 obj_response = requests.get(obj_url)
                 if obj_response.status_code == 200:
                     obj_details = obj_response.json()
                     obj_details['extraction_date'] = datetime.now().strftime('%Y-%m-%d')
-                    batch_objects.append(obj_details)
+                    
+                    # Convert to record format
+                    extraction_date_str = obj_details.get('extraction_date')
+                    try:
+                        extraction_date = datetime.strptime(extraction_date_str, '%Y-%m-%d').date()
+                    except (ValueError, TypeError):
+                        extraction_date = datetime.now().date()
+                    
+                    record = {
+                        'objectID': obj_details.get('objectID', 0),
+                        'title': obj_details.get('title', ''),
+                        'artistDisplayName': obj_details.get('artistDisplayName', 'Unknown Artist'),
+                        'artistDisplayBio': obj_details.get('artistDisplayBio', ''),
+                        'artistNationality': obj_details.get('artistNationality', ''),
+                        'objectDate': obj_details.get('objectDate', 'Unknown Date'),
+                        'objectBeginDate': obj_details.get('objectBeginDate', 0),
+                        'objectEndDate': obj_details.get('objectEndDate', 0),
+                        'medium': obj_details.get('medium', 'Unknown Medium'),
+                        'department': obj_details.get('department', 'Unknown Department'),
+                        'classification': obj_details.get('classification', 'Unknown'),
+                        'culture': obj_details.get('culture', ''),
+                        'period': obj_details.get('period', ''),
+                        'dynasty': obj_details.get('dynasty', ''),
+                        'dimensions': obj_details.get('dimensions', ''),
+                        'city': obj_details.get('city', ''),
+                        'state': obj_details.get('state', ''),
+                        'country': obj_details.get('country', ''),
+                        'primaryImage': obj_details.get('primaryImage', ''),
+                        'objectURL': obj_details.get('objectURL', ''),
+                        'isPublicDomain': 1 if obj_details.get('isPublicDomain', False) else 0,
+                        'GalleryNumber': obj_details.get('GalleryNumber', ''),
+                        'extraction_date': extraction_date
+                    }
+                    current_chunk.append(record)
                 else:
                     print(f"Failed to fetch object {obj_id}: HTTP {obj_response.status_code}")
             except Exception as e:
                 print(f"Error fetching object {obj_id}: {str(e)}")
+            
+            # Insert chunk if we've reached chunk_size or this is the last item
+            is_last_item = (i == len(object_ids) - 1)
+            if len(current_chunk) >= chunk_size or (is_last_item and current_chunk):
+                try:
+                    clickhouse_hook.execute('INSERT INTO met_museum_objects VALUES', current_chunk)
+                    total_inserted += len(current_chunk)
+                    print(f"Batch {batch_num}: Progress {total_inserted}/{len(object_ids)} objects inserted ({(total_inserted/len(object_ids)*100):.1f}%)")
+                    
+                    # Clear the chunk after insert
+                    current_chunk = []
+                except Exception as e:
+                    print(f"Error inserting chunk: {str(e)}")
         
-        # Transform and load
-        records = []
-        for item in batch_objects:
-            # Convert string date to Python date object
-            extraction_date_str = item.get('extraction_date')
-            try:
-                extraction_date = datetime.strptime(extraction_date_str, '%Y-%m-%d').date()
-            except (ValueError, TypeError):
-                extraction_date = datetime.now().date()
-                
-            record = {
-                'objectID': item.get('objectID', 0),
-                'title': item.get('title', ''),
-                'artistDisplayName': item.get('artistDisplayName', 'Unknown Artist'),
-                'artistDisplayBio': item.get('artistDisplayBio', ''),
-                'artistNationality': item.get('artistNationality', ''),
-                'objectDate': item.get('objectDate', 'Unknown Date'),
-                'objectBeginDate': item.get('objectBeginDate', 0),
-                'objectEndDate': item.get('objectEndDate', 0),
-                'medium': item.get('medium', 'Unknown Medium'),
-                'department': item.get('department', 'Unknown Department'),
-                'classification': item.get('classification', 'Unknown'),
-                'culture': item.get('culture', ''),
-                'period': item.get('period', ''),
-                'dynasty': item.get('dynasty', ''),
-                'dimensions': item.get('dimensions', ''),
-                'city': item.get('city', ''),
-                'state': item.get('state', ''),
-                'country': item.get('country', ''),
-                'primaryImage': item.get('primaryImage', ''),
-                'objectURL': item.get('objectURL', ''),
-                'isPublicDomain': 1 if item.get('isPublicDomain', False) else 0,
-                'GalleryNumber': item.get('GalleryNumber', ''),
-                'extraction_date': extraction_date
-            }
-            records.append(record)
-        
-        # Insert batch
-        if records:
-            clickhouse_hook = ClickHouseHook(clickhouse_conn_id='clickhouse_default')
-            clickhouse_hook.execute('INSERT INTO met_museum_objects VALUES', records)
-            return f"Batch {batch_num}: Inserted {len(records)} records"
-        else:
-            return f"Batch {batch_num}: No records to insert"
+        return f"Batch {batch_num}: Completed - Total {total_inserted}/{len(object_ids)} records inserted"
     
     # Create task instances
     batches = extract_and_plan()
