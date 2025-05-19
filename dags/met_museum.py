@@ -11,7 +11,7 @@ POSTGRES_CONN_ID = "postgres_default"
 default_args = {
     "owner": "airflow",
     "depends_on_past": False,
-    "start_date": datetime(2023, 1, 1),
+    "start_date": datetime(2025, 5, 19),
     "retries": 1,
 }
 
