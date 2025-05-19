@@ -46,7 +46,7 @@ def extract_from_api(**kwargs):
         
         # For testing purposes, limit to first 1000 objects
         # Remove this limitation in production
-        object_ids = object_ids[:1000]
+        # object_ids = object_ids[:1000]
         
         # Split into batches
         batch_size = 50
