@@ -29,7 +29,7 @@ default_args = {
     description='Extract data from Met Museum API with dynamic tasks',
     schedule_interval='@daily',
     max_active_runs=1,
-    concurrency=3,
+    concurrency=4,
     catchup=False,
 )
 def create_dag():
