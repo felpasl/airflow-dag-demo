@@ -1,3 +1,4 @@
+# Import at the top level for the decorators to work correctly
 import json
 from datetime import datetime, timedelta
 import requests
@@ -8,6 +9,7 @@ from airflow_clickhouse_plugin.operators.clickhouse import ClickHouseOperator
 from airflow_clickhouse_plugin.hooks.clickhouse import ClickHouseHook
 from airflow.operators.dummy_operator import DummyOperator
 from airflow.utils.task_group import TaskGroup
+from airflow.decorators import task, dag as dag_decorator, task_group
 
 # Default arguments for the DAG
 default_args = {
@@ -20,262 +22,173 @@ default_args = {
     'start_date': datetime(2023, 1, 1),
 }
 
-# Create the DAG
-dag = DAG(
-    'met_museum_to_clickhouse_dynamic',
-    default_args=default_args,
-    description='Extract data from Met Museum API in batch tasks',
-    schedule_interval='@daily',
-    max_active_runs=1,  # Limits the DAG to only 1 run at a time
-    concurrency=1,      # Limits concurrent task instances to 3 across all DAG runs
-    catchup=False,
-)
-
-# Function to extract data from API
-def extract_from_api(**kwargs):
-    """
-    Extract data from Met Museum API and return list of object IDs
-    """
-    # Get list of object IDs
-    api_url = "https://collectionapi.metmuseum.org/public/collection/v1/objects"
-    response = requests.get(api_url)
-    
-    if response.status_code == 200:
-        object_data = response.json()
-        object_ids = object_data.get('objectIDs', [])
-        
-        # For testing purposes, limit to first 1000 objects
-        # Remove this limitation in production
-        # object_ids = object_ids[:1000]
-        
-        # Split into batches
-        batch_size = 50
-        batches = []
-        for i in range(0, len(object_ids), batch_size):
-            batch = object_ids[i:i+batch_size]
-            batches.append(batch)
-        
-        # Store batch information
-        kwargs['ti'].xcom_push(key='batches', value=json.dumps(batches))
-        print(f"Created {len(batches)} batches from {len(object_ids)} object IDs")
-        
-        return batches
-    else:
-        raise Exception(f"API request failed with status code {response.status_code}")
-
-# Function to extract data and plan processing
-def extract_and_plan(**kwargs):
-    """
-    Extract object IDs from Met Museum API and plan batch processing
-    """
-    # Get list of object IDs
-    api_url = "https://collectionapi.metmuseum.org/public/collection/v1/objects"
-    response = requests.get(api_url)
-    
-    if response.status_code == 200:
-        object_data = response.json()
-        object_ids = object_data.get('objectIDs', [])
-        
-        # For testing, limit to 1000 objects
-        # Remove this in production
-        # object_ids = object_ids[:1000]
-        
-        # Split into batches
-        batch_size = 50
-        batches = []
-        for i in range(0, len(object_ids), batch_size):
-            batch = object_ids[i:i+batch_size]
-            batches.append({
-                'batch_num': i // batch_size + 1,
-                'object_ids': batch
-            })
-        
-        # Store batches info for dynamic task mapping
-        kwargs['ti'].xcom_push(key='processing_batches', value=batches)
-        return batches
-    else:
-        raise Exception(f"API request failed with status code {response.status_code}")
-
-# Function to prepare ClickHouse table
-def prepare_clickhouse_table(**kwargs):
-    """Create ClickHouse table if it doesn't exist"""
-    clickhouse_hook = ClickHouseHook(clickhouse_conn_id='clickhouse_default')
-    
-    create_table_query = """
-    CREATE TABLE IF NOT EXISTS met_museum_objects (
-        objectID UInt64,
-        title String,
-        artistDisplayName String,
-        artistDisplayBio String,
-        artistNationality String,
-        objectDate String,
-        objectBeginDate Int32,
-        objectEndDate Int32,
-        medium String,
-        department String,
-        classification String,
-        culture String,
-        period String,
-        dynasty String,
-        dimensions String,
-        city String,
-        state String,
-        country String,
-        primaryImage String,
-        objectURL String,
-        isPublicDomain UInt8,
-        GalleryNumber String,
-        extraction_date Date
-    ) ENGINE = MergeTree()
-    ORDER BY (objectID, extraction_date)
-    """
-    
-    clickhouse_hook.execute(create_table_query)
-    return "Table prepared successfully"
-
-# Process a single batch of objects
-def process_object_batch(batch, **kwargs):
-    """Process a batch of objects and insert into ClickHouse"""
-    batch_num = batch['batch_num']
-    object_ids = batch['object_ids']
-    
-    print(f"Processing batch {batch_num} with {len(object_ids)} objects")
-    
-    batch_objects = []
-    
-    # Fetch objects in batch
-    for obj_id in object_ids:
-        obj_url = f"https://collectionapi.metmuseum.org/public/collection/v1/objects/{obj_id}"
-        try:
-            obj_response = requests.get(obj_url)
-            if obj_response.status_code == 200:
-                obj_details = obj_response.json()
-                obj_details['extraction_date'] = datetime.now().strftime('%Y-%m-%d')
-                batch_objects.append(obj_details)
-            else:
-                print(f"Failed to fetch object {obj_id}: HTTP {obj_response.status_code}")
-        except Exception as e:
-            print(f"Error fetching object {obj_id}: {str(e)}")
-    
-    # Transform and load
-    records = []
-    for item in batch_objects:
-        # Convert string date to Python date object
-        extraction_date_str = item.get('extraction_date')
-        try:
-            extraction_date = datetime.strptime(extraction_date_str, '%Y-%m-%d').date()
-        except (ValueError, TypeError):
-            extraction_date = datetime.now().date()
-            
-        record = {
-            'objectID': item.get('objectID', 0),
-            'title': item.get('title', ''),
-            'artistDisplayName': item.get('artistDisplayName', 'Unknown Artist'),
-            'artistDisplayBio': item.get('artistDisplayBio', ''),
-            'artistNationality': item.get('artistNationality', ''),
-            'objectDate': item.get('objectDate', 'Unknown Date'),
-            'objectBeginDate': item.get('objectBeginDate', 0),
-            'objectEndDate': item.get('objectEndDate', 0),
-            'medium': item.get('medium', 'Unknown Medium'),
-            'department': item.get('department', 'Unknown Department'),
-            'classification': item.get('classification', 'Unknown'),
-            'culture': item.get('culture', ''),
-            'period': item.get('period', ''),
-            'dynasty': item.get('dynasty', ''),
-            'dimensions': item.get('dimensions', ''),
-            'city': item.get('city', ''),
-            'state': item.get('state', ''),
-            'country': item.get('country', ''),
-            'primaryImage': item.get('primaryImage', ''),
-            'objectURL': item.get('objectURL', ''),
-            'isPublicDomain': 1 if item.get('isPublicDomain', False) else 0,
-            'GalleryNumber': item.get('GalleryNumber', ''),
-            'extraction_date': extraction_date
-        }
-        records.append(record)
-    
-    # Insert batch
-    if records:
-        clickhouse_hook = ClickHouseHook(clickhouse_conn_id='clickhouse_default')
-        clickhouse_hook.execute('INSERT INTO met_museum_objects VALUES', records)
-        return f"Batch {batch_num}: Inserted {len(records)} records"
-    else:
-        return f"Batch {batch_num}: No records to insert"
-
-# Create DAG
-dag = DAG(
-    'met_museum_to_clickhouse_dynamic',
+# Create the DAG using the decorator pattern
+@dag_decorator(
+    dag_id='met_museum_to_clickhouse_dynamic',
     default_args=default_args,
     description='Extract data from Met Museum API with dynamic tasks',
     schedule_interval='@daily',
+    max_active_runs=1,
+    concurrency=1,
     catchup=False,
 )
-
-# Initial tasks
-extract_plan_task = PythonOperator(
-    task_id='extract_and_plan',
-    python_callable=extract_and_plan,
-    provide_context=True,
-    dag=dag,
-)
-
-prepare_table_task = PythonOperator(
-    task_id='prepare_clickhouse_table',
-    python_callable=prepare_clickhouse_table,
-    provide_context=True,
-    dag=dag,
-)
-
-# Create dynamic batch processing tasks
-def create_batch_processing_tasks(dag):
+def create_dag():
     """
-    Dynamically create batch processing tasks using the actual data
-    from the upstream 'extract_and_plan' task.
-    
-    Uses Airflow's dynamic task mapping feature to create tasks based on
-    the actual number of batches rather than a fixed number.
+    Creates a DAG that extracts object IDs from the Met Museum API,
+    splits them into batches, and processes each batch in parallel.
     """
-    from airflow.decorators import task
-    
-    # Create a task group for batch processing
-    with TaskGroup(group_id="batch_processing", dag=dag) as batch_group:
-        # This dummy task helps with visualization
-        start_processing = DummyOperator(task_id='start_processing', dag=dag)
+    @task
+    def extract_and_plan():
+        """
+        Extract object IDs from Met Museum API and plan batch processing
+        """
+        api_url = "https://collectionapi.metmuseum.org/public/collection/v1/objects"
+        response = requests.get(api_url)
         
-        # Function to get batches data from XCom
-        @task(task_id="get_batches")
-        def get_batches(**context):
-            ti = context['ti']
-            batches = ti.xcom_pull(task_ids='extract_and_plan', key='processing_batches')
-            if not batches:
-                print("Warning: No batches found in XCom, returning empty list")
-                return []
+        if response.status_code == 200:
+            object_data = response.json()
+            object_ids = object_data.get('objectIDs', [])
+            
+            # For testing, limit to 1000 objects
+            # Remove this in production
+            object_ids = object_ids[:1000]
+            
+            # Split into batches
+            batch_size = 50
+            batches = []
+            for i in range(0, len(object_ids), batch_size):
+                batch = object_ids[i:i+batch_size]
+                batches.append({
+                    'batch_num': i // batch_size + 1,
+                    'object_ids': batch
+                })
+            
+            print(f"Created {len(batches)} batches from {len(object_ids)} object IDs")
             return batches
-        
-        # Function to process a single batch
-        @task(task_id="process_batch")
-        def process_batch_task(batch, **context):
-            return process_object_batch(batch, **context)
-        
-        # Get the batches using the task
-        batches = get_batches()
-        
-        # Map the processing task to each batch
-        # This is the key part - using Airflow's dynamic task mapping
-        mapped_tasks = process_batch_task.expand(batch=batches)
-        
-        # Set up the dependencies
-        start_processing >> batches
-        batches >> mapped_tasks
-        
-        # This dummy task helps with visualization
-        end_processing = DummyOperator(task_id='end_processing', dag=dag)
-        mapped_tasks >> end_processing
+        else:
+            raise Exception(f"API request failed with status code {response.status_code}")
     
-    return batch_group
+    @task
+    def prepare_clickhouse_table():
+        """Create ClickHouse table if it doesn't exist"""
+        clickhouse_hook = ClickHouseHook(clickhouse_conn_id='clickhouse_default')
+        
+        create_table_query = """
+        CREATE TABLE IF NOT EXISTS met_museum_objects (
+            objectID UInt64,
+            title String,
+            artistDisplayName String,
+            artistDisplayBio String,
+            artistNationality String,
+            objectDate String,
+            objectBeginDate Int32,
+            objectEndDate Int32,
+            medium String,
+            department String,
+            classification String,
+            culture String,
+            period String,
+            dynasty String,
+            dimensions String,
+            city String,
+            state String,
+            country String,
+            primaryImage String,
+            objectURL String,
+            isPublicDomain UInt8,
+            GalleryNumber String,
+            extraction_date Date
+        ) ENGINE = MergeTree()
+        ORDER BY (objectID, extraction_date)
+        """
+        
+        clickhouse_hook.execute(create_table_query)
+        return "Table prepared successfully"
+    
+    @task
+    def process_batch(batch):
+        """Process a batch of objects and insert into ClickHouse"""
+        batch_num = batch['batch_num']
+        object_ids = batch['object_ids']
+        
+        print(f"Processing batch {batch_num} with {len(object_ids)} objects")
+        
+        batch_objects = []
+        
+        # Fetch objects in batch
+        for obj_id in object_ids:
+            obj_url = f"https://collectionapi.metmuseum.org/public/collection/v1/objects/{obj_id}"
+            try:
+                obj_response = requests.get(obj_url)
+                if obj_response.status_code == 200:
+                    obj_details = obj_response.json()
+                    obj_details['extraction_date'] = datetime.now().strftime('%Y-%m-%d')
+                    batch_objects.append(obj_details)
+                else:
+                    print(f"Failed to fetch object {obj_id}: HTTP {obj_response.status_code}")
+            except Exception as e:
+                print(f"Error fetching object {obj_id}: {str(e)}")
+        
+        # Transform and load
+        records = []
+        for item in batch_objects:
+            # Convert string date to Python date object
+            extraction_date_str = item.get('extraction_date')
+            try:
+                extraction_date = datetime.strptime(extraction_date_str, '%Y-%m-%d').date()
+            except (ValueError, TypeError):
+                extraction_date = datetime.now().date()
+                
+            record = {
+                'objectID': item.get('objectID', 0),
+                'title': item.get('title', ''),
+                'artistDisplayName': item.get('artistDisplayName', 'Unknown Artist'),
+                'artistDisplayBio': item.get('artistDisplayBio', ''),
+                'artistNationality': item.get('artistNationality', ''),
+                'objectDate': item.get('objectDate', 'Unknown Date'),
+                'objectBeginDate': item.get('objectBeginDate', 0),
+                'objectEndDate': item.get('objectEndDate', 0),
+                'medium': item.get('medium', 'Unknown Medium'),
+                'department': item.get('department', 'Unknown Department'),
+                'classification': item.get('classification', 'Unknown'),
+                'culture': item.get('culture', ''),
+                'period': item.get('period', ''),
+                'dynasty': item.get('dynasty', ''),
+                'dimensions': item.get('dimensions', ''),
+                'city': item.get('city', ''),
+                'state': item.get('state', ''),
+                'country': item.get('country', ''),
+                'primaryImage': item.get('primaryImage', ''),
+                'objectURL': item.get('objectURL', ''),
+                'isPublicDomain': 1 if item.get('isPublicDomain', False) else 0,
+                'GalleryNumber': item.get('GalleryNumber', ''),
+                'extraction_date': extraction_date
+            }
+            records.append(record)
+        
+        # Insert batch
+        if records:
+            clickhouse_hook = ClickHouseHook(clickhouse_conn_id='clickhouse_default')
+            clickhouse_hook.execute('INSERT INTO met_museum_objects VALUES', records)
+            return f"Batch {batch_num}: Inserted {len(records)} records"
+        else:
+            return f"Batch {batch_num}: No records to insert"
+    
+    # Create task instances
+    batches = extract_and_plan()
+    table_ready = prepare_clickhouse_table()
+    
+    # Create a dummy task to mark the start of batch processing
+    start_processing = DummyOperator(task_id='start_processing')
+    
+    # Use dynamic mapping to create a task for each batch
+    batch_results = process_batch.expand(batch=batches)
+    
+    # Create a dummy task to mark the end of batch processing
+    end_processing = DummyOperator(task_id='end_processing')
+    
+    # Set dependencies
+    batches >> table_ready >> start_processing >> batch_results >> end_processing
 
-# Create the batch processing task group
-batch_processing = create_batch_processing_tasks(dag)
-
-# Set task dependencies
-extract_plan_task >> prepare_table_task >> batch_processing
+# Instantiate the DAG
+met_museum_dag = create_dag()
