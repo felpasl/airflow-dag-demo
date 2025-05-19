@@ -51,10 +51,10 @@ def create_dag():
             
             # For testing, limit to 1000 objects
             # Remove this in production
-            object_ids = object_ids[:1000]
+            # object_ids = object_ids[:1000]
             
             # Split into batches
-            batch_size = 50
+            batch_size = 200
             batches = []
             for i in range(0, len(object_ids), batch_size):
                 batch = object_ids[i:i+batch_size]
