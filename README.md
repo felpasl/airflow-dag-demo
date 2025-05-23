@@ -44,6 +44,12 @@ airflow-dag-demo
    airflow scheduler
    ```
 
+## Development Environment
+
+This project includes a Dockerized development environment that can be used with VSCode for a consistent and easy-to-use setup for developing and debugging Airflow DAGs.
+
+For detailed instructions on how to set up and use this environment, please see the [DEVELOPMENT.MD](DEVELOPMENT.md) guide.
+
 ## Usage
 
 - The example DAG can be found in `dags/example_dag.py`. You can modify it to suit your needs.
