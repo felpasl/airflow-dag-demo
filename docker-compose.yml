@@ -1,0 +1,108 @@
+version: '3.8'
+
+x-airflow-common: &airflow-common
+  image: custom-airflow:latest # This will be built from the Dockerfile
+  build:
+    context: .
+    dockerfile: Dockerfile
+  environment:
+    - AIRFLOW__CORE__EXECUTOR=LocalExecutor
+    - AIRFLOW__CORE__LOAD_EXAMPLES=False
+    - AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION=True
+    - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql+psycopg2://airflow:airflow@postgres:5432/airflow
+    - AIRFLOW__WEBSERVER__EXPOSE_CONFIG=True
+    # Connection for Postgres (metastore)
+    - AIRFLOW_CONN_POSTGRES_DEFAULT=postgresql://airflow:airflow@postgres:5432/airflow
+    # Connection for ClickHouse
+    - AIRFLOW_CONN_CLICKHOUSE_DEFAULT=clickhouse://clickhouse_user:clickhouse_password@clickhouse:8123/default
+    # Add any other essential Airflow environment variables
+  volumes:
+    - ./dags:/opt/airflow/dags
+    - ./utils:/opt/airflow/utils
+    # Potentially logs and plugins if you add them
+    # - ./logs:/opt/airflow/logs 
+  depends_on:
+    postgres:
+      condition: service_healthy
+    clickhouse:
+      condition: service_healthy # Wait for clickhouse to be healthy
+
+services:
+  postgres:
+    image: postgres:13
+    environment:
+      - POSTGRES_USER=airflow
+      - POSTGRES_PASSWORD=airflow
+      - POSTGRES_DB=airflow
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U airflow"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:latest 
+    environment:
+      # Define a user and password for ClickHouse.
+      # These are examples; use secure credentials in a real scenario.
+      - CLICKHOUSE_USER=clickhouse_user 
+      - CLICKHOUSE_PASSWORD=clickhouse_password
+      - CLICKHOUSE_DB=default # Optional: define a default database
+    ports:
+      - "8123:8123" # HTTP interface
+      - "9000:9000" # Native client interface
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8123/ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    # Add ulimits for ClickHouse if needed, common in some environments
+    # ulimits:
+    #   nofile:
+    #     soft: 262144
+    #     hard: 262144
+
+  airflow-scheduler:
+    <<: *airflow-common
+    command: scheduler
+    ports:
+      - "8793:8793" # For scheduler job logs, if needed
+    healthcheck:
+      test: ["CMD-SHELL", "airflow jobs check --job-type SchedulerJob --hostname $(hostname)"]
+      interval: 10s
+      timeout: 10s
+      retries: 5
+
+  airflow-webserver:
+    <<: *airflow-common
+    command: webserver
+    ports:
+      - "8080:8080"
+    depends_on:
+      <<: (*airflow-common).depends_on # Inherit postgres and clickhouse dependencies
+      airflow-scheduler: # Webserver should ideally wait for scheduler to be healthy
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 10s
+      retries: 5
+      
+  airflow-init:
+    <<: *airflow-common
+    command: bash -c "airflow db init && airflow users create --username admin --password admin --firstname Anonymous --lastname Admin --role Admin --email admin@example.com"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+
+volumes:
+  postgres_db_data:
+  clickhouse_data:
